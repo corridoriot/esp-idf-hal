@@ -1,6 +1,6 @@
 //: QueueHandle_t ! UART peripheral control
-//! Controls UART peripherals (UART0, UART1, UART2).
 //!
+//! Controls UART peripherals (UART0, UART1, UART2).
 //! Notice that UART0 is typically already used for loading firmware and logging.
 //! Therefore use UART1 and UART2 in your application.
 //! Any pin can be used for `rx` and `tx`.
@@ -33,7 +33,7 @@
 //! ```
 //!
 //! # TODO
-//! - Add all extra features esp32 supports
+//! - Add all extra features esp32 supports (eg rs485, etc. etc.)
 //! - Free APB lock when TX is idle (and no RX used)
 //! - Address errata 3.17: UART fifo_cnt is inconsistent with FIFO pointer
 
@@ -68,35 +68,6 @@ pub mod config {
     use enumset::{enum_set, EnumSet, EnumSetType};
     use esp_idf_sys::*;
 
-    /// Mode
-    #[derive(PartialEq, Eq, Copy, Clone, Debug)]
-    pub enum Mode {
-        /// regular UART mode
-        UART,
-        /// half duplex RS485 UART mode control by RTS pin
-        RS485HalfDuplex,
-    }
-
-    impl From<Mode> for uart_mode_t {
-        fn from(mode: Mode) -> Self {
-            match mode {
-                Mode::UART => uart_mode_t_UART_MODE_UART,
-                Mode::RS485HalfDuplex => uart_mode_t_UART_MODE_RS485_HALF_DUPLEX,
-            }
-        }
-    }
-
-    impl From<uart_mode_t> for Mode {
-        #[allow(non_upper_case_globals)]
-        fn from(uart_mode: uart_mode_t) -> Self {
-            match uart_mode {
-                uart_mode_t_UART_MODE_UART => Mode::UART,
-                uart_mode_t_UART_MODE_RS485_HALF_DUPLEX => Mode::RS485HalfDuplex,
-                _ => unreachable!(),
-            }
-        }
-    }
-
     /// Number of data bits
     #[derive(PartialEq, Eq, Copy, Clone, Debug)]
     pub enum DataBits {
@@ -130,7 +101,7 @@ pub mod config {
         }
     }
 
-    /// Flow control
+    /// Number of data bits
     #[derive(PartialEq, Eq, Copy, Clone, Debug)]
     pub enum FlowControl {
         None,
@@ -276,7 +247,7 @@ pub mod config {
                 #[cfg(esp_idf_soc_uart_support_xtal_clk)]
                 XTAL_SCLK => SourceClock::Crystal,
                 #[cfg(esp_idf_soc_uart_support_pll_f80m_clk)]
-                PLL_F80M_SCLK => SourceClock::PLL_F80M,
+                PLL_F80M => SourceClock::PLL_F80M,
                 #[cfg(esp_idf_soc_uart_support_ref_tick)]
                 REF_TICK_SCLK => SourceClock::RefTick,
                 _ => unreachable!(),
@@ -479,7 +450,6 @@ pub mod config {
     /// UART configuration
     #[derive(Debug, Clone)]
     pub struct Config {
-        pub mode: Mode,
         pub baudrate: Hertz,
         pub data_bits: DataBits,
         pub parity: Parity,
@@ -511,59 +481,23 @@ pub mod config {
         pub _non_exhaustive: (),
     }
 
-    impl From<&Config> for uart_config_t {
-        fn from(config: &Config) -> Self {
-            #[allow(clippy::needless_update)]
-            Self {
-                baud_rate: config.baudrate.0 as i32,
-                data_bits: config.data_bits.into(),
-                parity: config.parity.into(),
-                stop_bits: config.stop_bits.into(),
-                flow_ctrl: config.flow_control.into(),
-                rx_flow_ctrl_thresh: config.flow_control_rts_threshold,
-                // ESP-IDF 5.0 and 5.1
-                #[cfg(all(
-                    esp_idf_version_major = "5",
-                    any(esp_idf_version_minor = "0", esp_idf_version_minor = "1")
-                ))]
-                source_clk: config.source_clock.into(),
-                // All others
-                #[cfg(not(all(
-                    esp_idf_version_major = "5",
-                    any(esp_idf_version_minor = "0", esp_idf_version_minor = "1")
-                )))]
-                __bindgen_anon_1: uart_config_t__bindgen_ty_1 {
-                    source_clk: config.source_clock.into(),
-                },
-                ..Default::default()
-            }
-        }
-    }
-
     impl Config {
         pub const fn new() -> Config {
             Config {
-                mode: Mode::UART,
-                baudrate: Hertz(115_200),
+                baudrate: Hertz(19_200),
                 data_bits: DataBits::DataBits8,
                 parity: Parity::ParityNone,
                 stop_bits: StopBits::STOP1,
                 flow_control: FlowControl::None,
                 flow_control_rts_threshold: 122,
                 source_clock: SourceClock::default(),
-                intr_flags: EnumSet::empty(),
+                intr_flags: EnumSet::EMPTY,
                 event_config: EventConfig::new(),
                 rx_fifo_size: super::UART_FIFO_SIZE * 2,
                 tx_fifo_size: super::UART_FIFO_SIZE * 2,
                 queue_size: 10,
                 _non_exhaustive: (),
             }
-        }
-
-        #[must_use]
-        pub fn mode(mut self, mode: Mode) -> Self {
-            self.mode = mode;
-            self
         }
 
         #[must_use]
@@ -716,8 +650,8 @@ pub struct UartDriver<'d> {
     _p: PhantomData<&'d mut ()>,
 }
 
-unsafe impl Send for UartDriver<'_> {}
-unsafe impl Sync for UartDriver<'_> {}
+unsafe impl<'d> Send for UartDriver<'d> {}
+unsafe impl<'d> Sync for UartDriver<'d> {}
 
 /// Serial receiver
 pub struct UartRxDriver<'d> {
@@ -965,23 +899,23 @@ impl<'d> UartDriver<'d> {
     }
 }
 
-impl Drop for UartDriver<'_> {
+impl<'d> Drop for UartDriver<'d> {
     fn drop(&mut self) {
         delete_driver(self.port()).unwrap();
     }
 }
 
-impl embedded_io::ErrorType for UartDriver<'_> {
+impl<'d> embedded_io::ErrorType for UartDriver<'d> {
     type Error = EspIOError;
 }
 
-impl embedded_io::Read for UartDriver<'_> {
+impl<'d> embedded_io::Read for UartDriver<'d> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         UartDriver::read(self, buf, delay::BLOCK).map_err(EspIOError)
     }
 }
 
-impl embedded_io::Write for UartDriver<'_> {
+impl<'d> embedded_io::Write for UartDriver<'d> {
     fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         UartDriver::write(self, buf).map_err(EspIOError)
     }
@@ -991,7 +925,7 @@ impl embedded_io::Write for UartDriver<'_> {
     }
 }
 
-impl embedded_hal_0_2::serial::Read<u8> for UartDriver<'_> {
+impl<'d> embedded_hal_0_2::serial::Read<u8> for UartDriver<'d> {
     type Error = SerialError;
 
     fn read(&mut self) -> nb::Result<u8, Self::Error> {
@@ -999,7 +933,7 @@ impl embedded_hal_0_2::serial::Read<u8> for UartDriver<'_> {
     }
 }
 
-impl embedded_hal_0_2::serial::Write<u8> for UartDriver<'_> {
+impl<'d> embedded_hal_0_2::serial::Write<u8> for UartDriver<'d> {
     type Error = SerialError;
 
     fn flush(&mut self) -> nb::Result<(), Self::Error> {
@@ -1011,17 +945,17 @@ impl embedded_hal_0_2::serial::Write<u8> for UartDriver<'_> {
     }
 }
 
-impl embedded_hal_nb::serial::ErrorType for UartDriver<'_> {
+impl<'d> embedded_hal_nb::serial::ErrorType for UartDriver<'d> {
     type Error = SerialError;
 }
 
-impl embedded_hal_nb::serial::Read<u8> for UartDriver<'_> {
+impl<'d> embedded_hal_nb::serial::Read<u8> for UartDriver<'d> {
     fn read(&mut self) -> nb::Result<u8, Self::Error> {
         embedded_hal_nb::serial::Read::read(&mut *self.rx())
     }
 }
 
-impl embedded_hal_nb::serial::Write<u8> for UartDriver<'_> {
+impl<'d> embedded_hal_nb::serial::Write<u8> for UartDriver<'d> {
     fn write(&mut self, byte: u8) -> nb::Result<(), Self::Error> {
         embedded_hal_nb::serial::Write::write(&mut *self.tx(), byte)
     }
@@ -1031,7 +965,7 @@ impl embedded_hal_nb::serial::Write<u8> for UartDriver<'_> {
     }
 }
 
-impl core::fmt::Write for UartDriver<'_> {
+impl<'d> core::fmt::Write for UartDriver<'d> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.tx().write_str(s)
     }
@@ -1130,71 +1064,22 @@ impl<'d> UartRxDriver<'d> {
     }
 
     /// Read multiple bytes into a slice; block until specified timeout
-    /// Returns:
-    /// - `Ok(0)` if the buffer is of length 0
-    /// - `Ok(n)` if `n` bytes were read, where n is > 0
-    /// - `Err(EspError::Timeout)` if no bytes were read within the specified timeout
     pub fn read(&self, buf: &mut [u8], delay: TickType_t) -> Result<usize, EspError> {
-        // `uart_read_bytes` has a WEIRD semantics:
-        // - If the data in the internal ring-buffer is LESS than the passed `length`
-        //   **it will wait (with a `delay` timeout) UNTIL it can return up to `length` bytes**
-        //   (and if the timeout had expired, it will return whatever it was able to read - possibly nothing too)
-        // - This is not matching the typical `read` syscall semantics where it only
-        //   returns what is available in the internal buffer and does not wait for more;
-        //   and only blocks if the internal buffer is empty, and only until _some_ data becomes available
-        //   but NOT until `buf.len()` data is available.
-        //
-        // Therefore - and to avoid confusion - we will implement the typical `read` syscall
-        // semantics here
-
-        // Passing an empty buffer is valid, but it means we'll always read 0 bytes
-        if buf.is_empty() {
-            return Ok(0);
-        }
-
-        // First try to read without blocking
+        // uart_read_bytes() returns error (-1) or how many bytes were read out
+        // 0 means timeout and nothing is yet read out
         let len = unsafe {
             uart_read_bytes(
                 self.port(),
                 buf.as_mut_ptr().cast(),
                 buf.len() as u32,
-                delay::NON_BLOCK,
+                delay,
             )
         };
 
-        if len > 0 || delay == delay::NON_BLOCK {
-            // Some data was read, or the user requested a non-blocking read anyway
-            return match len {
-                -1 | 0 => Err(EspError::from_infallible::<ESP_ERR_TIMEOUT>()),
-                len => Ok(len as usize),
-            };
-        }
-
-        // Now block until at least one byte is available
-        let mut len =
-            unsafe { uart_read_bytes(self.port(), buf.as_mut_ptr().cast(), 1_u32, delay) };
-
-        if len > 0 && buf.len() > 1 {
-            // Try to read more than that one byte in a non-blocking way
-            // just because we can, and this lowers the latency of `read`.
-            // To comply with the `read` syscall semantics we don't have to necessarily do this
-            let extra_len = unsafe {
-                uart_read_bytes(
-                    self.port(),
-                    buf[1..].as_mut_ptr().cast(),
-                    (buf.len() - 1) as u32,
-                    delay::NON_BLOCK,
-                )
-            };
-
-            if extra_len > 0 {
-                len += extra_len;
-            }
-        }
-
-        match len {
-            -1 | 0 => Err(EspError::from_infallible::<ESP_ERR_TIMEOUT>()),
-            len => Ok(len as usize),
+        if len >= 0 {
+            Ok(len as usize)
+        } else {
+            Err(EspError::from_infallible::<ESP_ERR_INVALID_STATE>())
         }
     }
 
@@ -1220,23 +1105,23 @@ impl<'d> UartRxDriver<'d> {
     }
 }
 
-impl Drop for UartRxDriver<'_> {
+impl<'d> Drop for UartRxDriver<'d> {
     fn drop(&mut self) {
         self.owner.drop_impl(self.port()).unwrap()
     }
 }
 
-impl embedded_io::ErrorType for UartRxDriver<'_> {
+impl<'d> embedded_io::ErrorType for UartRxDriver<'d> {
     type Error = EspIOError;
 }
 
-impl embedded_io::Read for UartRxDriver<'_> {
+impl<'d> embedded_io::Read for UartRxDriver<'d> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         UartRxDriver::read(self, buf, delay::BLOCK).map_err(EspIOError)
     }
 }
 
-impl embedded_hal_0_2::serial::Read<u8> for UartRxDriver<'_> {
+impl<'d> embedded_hal_0_2::serial::Read<u8> for UartRxDriver<'d> {
     type Error = SerialError;
 
     fn read(&mut self) -> nb::Result<u8, Self::Error> {
@@ -1248,11 +1133,11 @@ impl embedded_hal_0_2::serial::Read<u8> for UartRxDriver<'_> {
     }
 }
 
-impl embedded_hal_nb::serial::ErrorType for UartRxDriver<'_> {
+impl<'d> embedded_hal_nb::serial::ErrorType for UartRxDriver<'d> {
     type Error = SerialError;
 }
 
-impl embedded_hal_nb::serial::Read<u8> for UartRxDriver<'_> {
+impl<'d> embedded_hal_nb::serial::Read<u8> for UartRxDriver<'d> {
     fn read(&mut self) -> nb::Result<u8, Self::Error> {
         let mut buf = [0_u8];
 
@@ -1415,13 +1300,13 @@ impl<'d> UartTxDriver<'d> {
     }
 }
 
-impl Drop for UartTxDriver<'_> {
+impl<'d> Drop for UartTxDriver<'d> {
     fn drop(&mut self) {
         self.owner.drop_impl(self.port()).unwrap()
     }
 }
 
-impl embedded_io::Write for UartTxDriver<'_> {
+impl<'d> embedded_io::Write for UartTxDriver<'d> {
     fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         UartTxDriver::write(self, buf).map_err(EspIOError)
     }
@@ -1431,11 +1316,11 @@ impl embedded_io::Write for UartTxDriver<'_> {
     }
 }
 
-impl embedded_io::ErrorType for UartTxDriver<'_> {
+impl<'d> embedded_io::ErrorType for UartTxDriver<'d> {
     type Error = EspIOError;
 }
 
-impl embedded_hal_0_2::serial::Write<u8> for UartTxDriver<'_> {
+impl<'d> embedded_hal_0_2::serial::Write<u8> for UartTxDriver<'d> {
     type Error = SerialError;
 
     fn flush(&mut self) -> nb::Result<(), Self::Error> {
@@ -1447,11 +1332,11 @@ impl embedded_hal_0_2::serial::Write<u8> for UartTxDriver<'_> {
     }
 }
 
-impl embedded_hal_nb::serial::ErrorType for UartTxDriver<'_> {
+impl<'d> embedded_hal_nb::serial::ErrorType for UartTxDriver<'d> {
     type Error = SerialError;
 }
 
-impl embedded_hal_nb::serial::Write<u8> for UartTxDriver<'_> {
+impl<'d> embedded_hal_nb::serial::Write<u8> for UartTxDriver<'d> {
     fn flush(&mut self) -> nb::Result<(), Self::Error> {
         check_nb_timeout(UartTxDriver::wait_done(self, delay::NON_BLOCK))
     }
@@ -1461,7 +1346,7 @@ impl embedded_hal_nb::serial::Write<u8> for UartTxDriver<'_> {
     }
 }
 
-impl core::fmt::Write for UartTxDriver<'_> {
+impl<'d> core::fmt::Write for UartTxDriver<'d> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         let buf = s.as_bytes();
         let mut offset = 0;
@@ -1973,7 +1858,30 @@ fn new_common<UART: Uart>(
     let cts = cts.map(|cts| cts.into_ref());
     let rts = rts.map(|rts| rts.into_ref());
 
-    let uart_config = config.into();
+    #[allow(clippy::needless_update)]
+    let uart_config = uart_config_t {
+        baud_rate: config.baudrate.0 as i32,
+        data_bits: config.data_bits.into(),
+        parity: config.parity.into(),
+        stop_bits: config.stop_bits.into(),
+        flow_ctrl: config.flow_control.into(),
+        rx_flow_ctrl_thresh: config.flow_control_rts_threshold,
+        // ESP-IDF 5.0 and 5.1
+        #[cfg(all(
+            esp_idf_version_major = "5",
+            any(esp_idf_version_minor = "0", esp_idf_version_minor = "1")
+        ))]
+        source_clk: config.source_clock.into(),
+        // All others
+        #[cfg(not(all(
+            esp_idf_version_major = "5",
+            any(esp_idf_version_minor = "0", esp_idf_version_minor = "1")
+        )))]
+        __bindgen_anon_1: uart_config_t__bindgen_ty_1 {
+            source_clk: config.source_clock.into(),
+        },
+        ..Default::default()
+    };
 
     esp!(unsafe { uart_param_config(UART::port(), &uart_config) })?;
 
@@ -2005,8 +1913,6 @@ fn new_common<UART: Uart>(
             InterruptType::to_native(config.intr_flags) as i32,
         )
     })?;
-
-    esp!(unsafe { uart_set_mode(UART::port(), config.mode.into()) })?;
 
     // Configure interrupts after installing the driver
     // so it won't get overwritten.
